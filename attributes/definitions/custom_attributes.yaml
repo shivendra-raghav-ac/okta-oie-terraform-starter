@@ -1,0 +1,296 @@
+# ========================================
+# Base Custom User Attributes
+# ========================================
+# This file defines the base custom attributes that will be
+# applied across all environments and regions.
+# Environment-specific overrides can modify these settings.
+
+version: "1.0"
+
+metadata:
+  description: "Base custom user attributes for Okta user schema"
+  owner: "Platform Engineering"
+  contact: "platform-team@company.com"
+  last_reviewed: "2024-01-15"
+  
+attributes:
+  # ========================================
+  # Employee Information
+  # ========================================
+  
+  - name: "employee_id"
+    type: "string"
+    display_name: "Employee ID"
+    description: "Unique employee identifier assigned by HR system"
+    master: "PROFILE_MASTER"  # Can be: PROFILE_MASTER, OKTA, OVERRIDE
+    permissions: "READ_WRITE"  # Can be: READ_WRITE, READ_ONLY, HIDE
+    required: false
+    pattern: "^[A-Z]{3}[0-9]{6}$"  # Format: ABC123456
+    min_length: 9
+    max_length: 9
+    unique: "UNIQUE_VALIDATED"  # Can be: UNIQUE_VALIDATED, NOT_UNIQUE
+    scope: "NONE"  # Can be: NONE, SELF, GROUP
+    deletable: false  # Custom flag for protection
+    
+  - name: "employee_type"
+    type: "string"
+    display_name: "Employee Type"
+    description: "Type of employment"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    enum:  # Restricted to these values
+      - "Full-Time"
+      - "Part-Time"
+      - "Contractor"
+      - "Intern"
+      - "Consultant"
+    
+  - name: "cost_center"
+    type: "string"
+    display_name: "Cost Center"
+    description: "Financial cost center code"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    pattern: "^CC[0-9]{4}$"  # Format: CC1234
+    min_length: 6
+    max_length: 6
+    
+  - name: "hire_date"
+    type: "string"
+    display_name: "Hire Date"
+    description: "Employee hire date (ISO 8601 format)"
+    master: "PROFILE_MASTER"
+    permissions: "READ_ONLY"  # Set by HR system only
+    required: false
+    pattern: "^\\d{4}-\\d{2}-\\d{2}$"  # Format: YYYY-MM-DD
+    
+  - name: "manager_id"
+    type: "string"
+    display_name: "Manager Employee ID"
+    description: "Direct manager's employee ID"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    pattern: "^[A-Z]{3}[0-9]{6}$"
+    
+  # ========================================
+  # Department & Organization
+  # ========================================
+  
+  - name: "business_unit"
+    type: "string"
+    display_name: "Business Unit"
+    description: "Primary business unit"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    enum:
+      - "Engineering"
+      - "Product"
+      - "Sales"
+      - "Marketing"
+      - "Finance"
+      - "HR"
+      - "Legal"
+      - "Operations"
+      - "Customer Success"
+      
+  - name: "team"
+    type: "string"
+    display_name: "Team"
+    description: "Specific team within business unit"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    max_length: 100
+    
+  - name: "office_location"
+    type: "string"
+    display_name: "Office Location"
+    description: "Primary office location"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    # Using one_of for better display names
+    one_of:
+      - const: "US-NYC"
+        title: "New York City"
+      - const: "US-SF"
+        title: "San Francisco"
+      - const: "UK-LON"
+        title: "London"
+      - const: "SG-SG"
+        title: "Singapore"
+      - const: "AU-SYD"
+        title: "Sydney"
+      - const: "JP-TOK"
+        title: "Tokyo"
+      - const: "REMOTE"
+        title: "Remote"
+        
+  # ========================================
+  # Technical Attributes
+  # ========================================
+  
+  - name: "github_username"
+    type: "string"
+    display_name: "GitHub Username"
+    description: "GitHub account username"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    pattern: "^[a-z\\d](?:[a-z\\d]|-(?=[a-z\\d])){0,38}$"  # GitHub username rules
+    max_length: 39
+    unique: "UNIQUE_VALIDATED"
+    
+  - name: "slack_id"
+    type: "string"
+    display_name: "Slack User ID"
+    description: "Slack workspace user ID"
+    master: "OKTA"  # Managed by Okta provisioning
+    permissions: "READ_ONLY"
+    required: false
+    pattern: "^[UW][A-Z0-9]{8,}$"  # Slack ID format
+    
+  - name: "aws_accounts"
+    type: "array"
+    array_type: "string"
+    display_name: "AWS Account Access"
+    description: "List of AWS account IDs with access"
+    master: "PROFILE_MASTER"
+    permissions: "READ_ONLY"
+    required: false
+    scope: "NONE"
+    
+  # ========================================
+  # Security & Compliance
+  # ========================================
+  
+  - name: "security_clearance"
+    type: "string"
+    display_name: "Security Clearance Level"
+    description: "Security clearance status"
+    master: "PROFILE_MASTER"
+    permissions: "READ_ONLY"  # HR/Security team only
+    required: false
+    enum:
+      - "None"
+      - "Public Trust"
+      - "Secret"
+      - "Top Secret"
+      
+  - name: "data_access_level"
+    type: "number"
+    display_name: "Data Access Level"
+    description: "Level of data access (1-5)"
+    master: "PROFILE_MASTER"
+    permissions: "READ_ONLY"
+    required: false
+    
+  - name: "compliance_training"
+    type: "array"
+    array_type: "string"
+    display_name: "Completed Compliance Training"
+    description: "List of completed compliance training modules"
+    master: "OKTA"
+    permissions: "READ_ONLY"
+    required: false
+    array_enum:  # Allowed values for array items
+      - "Security Awareness"
+      - "GDPR Training"
+      - "PCI Compliance"
+      - "HIPAA Training"
+      - "Anti-Phishing"
+      - "Insider Trading"
+      - "Code of Conduct"
+      
+  # ========================================
+  # Contact Information (Extended)
+  # ========================================
+  
+  - name: "emergency_contact"
+    type: "string"
+    display_name: "Emergency Contact"
+    description: "Emergency contact name and phone"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false
+    max_length: 200
+    
+  - name: "personal_email"
+    type: "string"
+    display_name: "Personal Email"
+    description: "Personal email for emergency use only"
+    master: "PROFILE_MASTER"
+    permissions: "HIDE"  # Hidden from regular users
+    required: false
+    pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+    
+  # ========================================
+  # Application Provisioning
+  # ========================================
+  
+  - name: "provision_google"
+    type: "boolean"
+    display_name: "Provision Google Workspace"
+    description: "Auto-provision Google Workspace account"
+    master: "OKTA"
+    permissions: "READ_ONLY"
+    required: false
+    
+  - name: "provision_microsoft"
+    type: "boolean"
+    display_name: "Provision Microsoft 365"
+    description: "Auto-provision Microsoft 365 account"
+    master: "OKTA"
+    permissions: "READ_ONLY"
+    required: false
+    
+  - name: "license_tier"
+    type: "string"
+    display_name: "License Tier"
+    description: "Software license tier"
+    master: "PROFILE_MASTER"
+    permissions: "READ_ONLY"
+    required: false
+    enum:
+      - "Basic"
+      - "Standard"
+      - "Premium"
+      - "Enterprise"
+      
+  # ========================================
+  # Metadata
+  # ========================================
+  
+  - name: "source_system"
+    type: "string"
+    display_name: "Source System"
+    description: "System of record for this user"
+    master: "OKTA"
+    permissions: "READ_ONLY"
+    required: false
+    enum:
+      - "Workday"
+      - "Active Directory"
+      - "Google Workspace"
+      - "Manual"
+      - "API"
+      
+  - name: "last_sync_time"
+    type: "string"
+    display_name: "Last Sync Time"
+    description: "Last synchronization timestamp"
+    master: "OKTA"
+    permissions: "READ_ONLY"
+    required: false
+    
+  - name: "custom_attributes"
+    type: "object"  # JSON object for flexible attributes
+    display_name: "Custom Attributes"
+    description: "Additional custom attributes as JSON"
+    master: "PROFILE_MASTER"
+    permissions: "READ_WRITE"
+    required: false

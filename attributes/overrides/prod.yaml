@@ -1,0 +1,29 @@
+# ========================================
+# PROD Environment Overrides
+# ========================================
+# This file contains environment-specific overrides and additions
+# for the PROD environment. These settings will override or extend
+# the base attributes defined in custom_attributes.yaml
+
+version: "1.0"
+
+metadata:
+  description: "Production environment attribute overrides"
+  environment: "prod"
+  owner: "Platform Engineering"
+
+# ========================================
+# Overrides Section
+# ========================================
+# These override specific properties of base attributes
+# Only include the properties you want to change
+
+overrides: []
+
+# ========================================
+# Additions Section
+# ========================================
+# These are new attributes only for PROD environment
+# Useful for testing new attributes before promoting to other environments
+
+additions: []

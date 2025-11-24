@@ -1,0 +1,53 @@
+# ========================================
+# Terraform Init Template
+# ========================================
+# Reusable template for Terraform initialization
+
+parameters:
+  - name: environment
+    type: string
+  - name: region
+    type: string
+  - name: workingDirectory
+    type: string
+    default: ''
+
+steps:
+  - task: TerraformInstaller@1
+    displayName: 'Install Terraform $(TF_VERSION)'
+    inputs:
+      terraformVersion: $(TF_VERSION)
+
+  - script: |
+      # Set working directory
+      if [ -z "${{ parameters.workingDirectory }}" ]; then
+        WORK_DIR="environments/${{ parameters.region }}/${{ parameters.environment }}"
+      else
+        WORK_DIR="${{ parameters.workingDirectory }}"
+      fi
+      
+      cd $WORK_DIR
+      
+      echo "========================================" 
+      echo "Terraform Init"
+      echo "========================================" 
+      echo "Environment: ${{ parameters.environment }}"
+      echo "Region: ${{ parameters.region }}"
+      echo "Directory: $WORK_DIR"
+      echo "========================================" 
+      
+      # Initialize Terraform with backend configuration
+      terraform init \
+        -input=false \
+        -no-color \
+        -upgrade=false
+      
+      # Validate backend configuration
+      terraform providers
+      
+      echo "✓ Terraform initialized successfully"
+    displayName: 'Terraform Init - ${{ parameters.environment }}-${{ parameters.region }}'
+    env:
+      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+      AWS_DEFAULT_REGION: 'us-east-1'

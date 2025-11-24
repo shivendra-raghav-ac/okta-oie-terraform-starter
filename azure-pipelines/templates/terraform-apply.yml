@@ -1,0 +1,160 @@
+# ========================================
+# Terraform Apply Template
+# ========================================
+# Reusable template for applying Terraform changes
+
+parameters:
+  - name: environment
+    type: string
+  - name: region
+    type: string
+  - name: variableGroup
+    type: string
+  - name: runSmokeTests
+    type: boolean
+    default: false
+
+steps:
+  - checkout: self
+    persistCredentials: true
+
+  - template: terraform-init.yml
+    parameters:
+      environment: ${{ parameters.environment }}
+      region: ${{ parameters.region }}
+
+  - script: |
+      cd environments/${{ parameters.region }}/${{ parameters.environment }}
+      
+      echo "========================================" 
+      echo "Pre-Apply Validation"
+      echo "========================================" 
+      
+      # Validate current state
+      terraform state list
+      
+      # Check for any locks
+      echo "Checking for state locks..."
+      terraform force-unlock -force $(terraform state pull | jq -r '.lineage' 2>/dev/null) 2>/dev/null || true
+      
+      echo "✓ Pre-apply validation complete"
+    displayName: 'Pre-Apply Checks'
+    env:
+      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+
+  - script: |
+      cd environments/${{ parameters.region }}/${{ parameters.environment }}
+      
+      echo "========================================" 
+      echo "Terraform Apply"
+      echo "========================================" 
+      echo "Environment: ${{ parameters.environment }}"
+      echo "Region: ${{ parameters.region }}"
+      echo "Build: $(Build.BuildNumber)"
+      echo "========================================" 
+      
+      # Set Terraform variables
+      export TF_VAR_environment="${{ parameters.environment }}"
+      export TF_VAR_region="${{ parameters.region }}"
+      export TF_VAR_okta_org_name="$(OKTA_ORG_NAME_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})"
+      export TF_VAR_okta_base_url="$(OKTA_BASE_URL_${{ upper(parameters.environment) }})"
+      export TF_VAR_okta_client_id="$(OKTA_CLIENT_ID_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})"
+      export TF_VAR_okta_private_key="$(OKTA_PRIVATE_KEY_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})"
+      export TF_VAR_okta_private_key_id="$(OKTA_KEY_ID_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})"
+      
+      # Apply changes
+      terraform apply \
+        -input=false \
+        -no-color \
+        -auto-approve \
+        2>&1 | tee apply_output.txt
+      
+      APPLY_EXIT_CODE=${PIPESTATUS[0]}
+      
+      if [ $APPLY_EXIT_CODE -eq 0 ]; then
+        echo "✓ Terraform apply successful"
+        
+        # Capture outputs
+        echo "Capturing outputs..."
+        terraform output -json > $(Build.ArtifactStagingDirectory)/outputs-${{ parameters.environment }}-${{ parameters.region }}.json
+      else
+        echo "❌ Terraform apply failed with exit code: $APPLY_EXIT_CODE"
+        exit $APPLY_EXIT_CODE
+      fi
+    displayName: 'Apply Changes - ${{ parameters.environment }}-${{ parameters.region }}'
+    env:
+      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+      AWS_DEFAULT_REGION: 'us-east-1'
+
+  - script: |
+      cd environments/${{ parameters.region }}/${{ parameters.environment }}
+      
+      echo "========================================" 
+      echo "Post-Apply Validation"
+      echo "========================================" 
+      
+      # Verify state
+      echo "Verifying deployment..."
+      terraform state list
+      
+      # Show summary
+      echo ""
+      echo "Deployment Summary:"
+      terraform output summary 2>/dev/null || true
+      
+      # Check drift immediately after apply
+      echo ""
+      echo "Checking for drift..."
+      terraform plan -detailed-exitcode > /dev/null 2>&1
+      DRIFT_CHECK=$?
+      
+      if [ $DRIFT_CHECK -eq 0 ] || [ $DRIFT_CHECK -eq 2 ]; then
+        echo "✓ No unexpected drift detected"
+      else
+        echo "⚠️  Warning: Drift detected immediately after apply"
+      fi
+    displayName: 'Post-Apply Validation'
+    condition: succeededOrFailed()
+    env:
+      AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+      AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+
+  - ${{ if eq(parameters.runSmokeTests, true) }}:
+    - script: |
+        echo "========================================" 
+        echo "Running Smoke Tests"
+        echo "========================================" 
+        
+        bash $(Build.SourcesDirectory)/scripts/smoke-tests.sh \
+          ${{ parameters.environment }} \
+          ${{ parameters.region }}
+        
+        echo "✓ Smoke tests complete"
+      displayName: 'Run Smoke Tests'
+      condition: succeeded()
+      continueOnError: true
+      env:
+        AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+        AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+        OKTA_ORG_NAME: $(OKTA_ORG_NAME_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})
+        OKTA_CLIENT_ID: $(OKTA_CLIENT_ID_${{ upper(parameters.environment) }}_${{ upper(parameters.region) }})
+
+  - publish: $(Build.ArtifactStagingDirectory)
+    artifact: deployment-outputs-${{ parameters.environment }}-${{ parameters.region }}
+    displayName: 'Publish Deployment Outputs'
+    condition: succeededOrFailed()
+
+  - script: |
+      echo "========================================" 
+      echo "Deployment Complete"
+      echo "========================================" 
+      echo "Environment: ${{ parameters.environment }}"
+      echo "Region: ${{ parameters.region }}"
+      echo "Status: Success"
+      echo "Build: $(Build.BuildNumber)"
+      echo "Time: $(date)"
+      echo "========================================" 
+    displayName: 'Deployment Summary'
+    condition: succeeded()

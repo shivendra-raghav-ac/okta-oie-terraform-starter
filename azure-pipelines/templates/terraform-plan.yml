@@ -1,0 +1,101 @@
+# ========================================
+# Terraform Plan Template
+# ========================================
+# Reusable template for generating Terraform plans
+
+parameters:
+  - name: environment
+    type: string
+  - name: regions
+    type: object
+  - name: variableGroup
+    type: string
+  - name: saveplan
+    type: boolean
+    default: false
+
+jobs:
+  - ${{ each region in parameters.regions }}:
+    - job: TerraformPlan_${{ parameters.environment }}_${{ region }}
+      displayName: 'Plan ${{ parameters.environment }} ${{ region }}'
+      variables:
+        - group: ${{ parameters.variableGroup }}
+      steps:
+        - checkout: self
+          persistCredentials: true
+
+        - template: terraform-init.yml
+          parameters:
+            environment: ${{ parameters.environment }}
+            region: ${{ region }}
+
+        - script: |
+            cd environments/${{ region }}/${{ parameters.environment }}
+            
+            echo "========================================" 
+            echo "Terraform Plan"
+            echo "========================================" 
+            echo "Environment: ${{ parameters.environment }}"
+            echo "Region: ${{ region }}"
+            echo "========================================" 
+            
+            # Set Terraform variables
+            export TF_VAR_environment="${{ parameters.environment }}"
+            export TF_VAR_region="${{ region }}"
+            export TF_VAR_okta_org_name="$(OKTA_ORG_NAME_${{ upper(parameters.environment) }}_${{ upper(region) }})"
+            export TF_VAR_okta_base_url="$(OKTA_BASE_URL_${{ upper(parameters.environment) }})"
+            export TF_VAR_okta_client_id="$(OKTA_CLIENT_ID_${{ upper(parameters.environment) }}_${{ upper(region) }})"
+            export TF_VAR_okta_private_key="$(OKTA_PRIVATE_KEY_${{ upper(parameters.environment) }}_${{ upper(region) }})"
+            export TF_VAR_okta_private_key_id="$(OKTA_KEY_ID_${{ upper(parameters.environment) }}_${{ upper(region) }})"
+            
+            # Generate plan
+            terraform plan \
+              -input=false \
+              -no-color \
+              -detailed-exitcode \
+              -out=tfplan \
+              2>&1 | tee plan_output.txt
+            
+            PLAN_EXIT_CODE=${PIPESTATUS[0]}
+            
+            # Check exit code
+            if [ $PLAN_EXIT_CODE -eq 0 ]; then
+              echo "✓ No changes required"
+            elif [ $PLAN_EXIT_CODE -eq 2 ]; then
+              echo "✓ Plan generated with changes"
+              
+              # Show summary
+              echo ""
+              echo "Plan Summary:"
+              grep -E "Plan:|No changes|To add|To change|To destroy" plan_output.txt || true
+              
+              # Save plan for apply if requested
+              if [ "${{ parameters.saveplan }}" == "true" ]; then
+                echo "Saving plan artifact..."
+                mkdir -p $(Build.ArtifactStagingDirectory)/plans
+                cp tfplan $(Build.ArtifactStagingDirectory)/plans/tfplan-${{ parameters.environment }}-${{ region }}
+                terraform show -json tfplan > $(Build.ArtifactStagingDirectory)/plans/tfplan-${{ parameters.environment }}-${{ region }}.json
+              fi
+            else
+              echo "❌ Plan failed with exit code: $PLAN_EXIT_CODE"
+              cat plan_output.txt
+              exit $PLAN_EXIT_CODE
+            fi
+          displayName: 'Generate Plan - ${{ parameters.environment }}-${{ region }}'
+          env:
+            AWS_ACCESS_KEY_ID: $(AWS_ACCESS_KEY_ID_${{ upper(parameters.environment) }})
+            AWS_SECRET_ACCESS_KEY: $(AWS_SECRET_ACCESS_KEY_${{ upper(parameters.environment) }})
+            AWS_DEFAULT_REGION: 'us-east-1'
+
+        - script: |
+            cd environments/${{ region }}/${{ parameters.environment }}
+            
+            # Generate human-readable plan summary
+            bash $(Build.SourcesDirectory)/scripts/plan-summary.sh ${{ parameters.environment }} ${{ region }} || true
+          displayName: 'Generate Plan Summary'
+          condition: always()
+
+        - publish: $(Build.ArtifactStagingDirectory)/plans
+          artifact: plan-${{ parameters.environment }}-${{ region }}
+          displayName: 'Publish Plan Artifact'
+          condition: and(succeeded(), eq('${{ parameters.saveplan }}', 'true'))

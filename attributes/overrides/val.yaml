@@ -1,0 +1,29 @@
+# ========================================
+# VAL Environment Overrides
+# ========================================
+# This file contains environment-specific overrides and additions
+# for the VAL environment. These settings will override or extend
+# the base attributes defined in custom_attributes.yaml
+
+version: "1.0"
+
+metadata:
+  description: "VAL environment attribute overrides"
+  environment: "val"
+  owner: "Platform Engineering"
+
+# ========================================
+# Overrides Section
+# ========================================
+# These override specific properties of base attributes
+# Only include the properties you want to change
+
+overrides: []
+
+# ========================================
+# Additions Section
+# ========================================
+# These are new attributes only for VAL environment
+# Useful for testing new attributes before promoting to other environments
+
+additions: []

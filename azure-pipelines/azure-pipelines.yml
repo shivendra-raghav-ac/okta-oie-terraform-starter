@@ -1,0 +1,528 @@
+# ========================================
+# Okta Terraform CI/CD Pipeline
+# ========================================
+# Main pipeline for validating and deploying Okta user schema attributes
+# Deployment triggered by Git tags: {env}/v{version}
+
+name: $(Date:yyyyMMdd)$(Rev:.r)-$(SourceBranchName)
+
+# ========================================
+# Triggers
+# ========================================
+
+trigger:
+  branches:
+    include:
+      - master
+      - develop
+  paths:
+    include:
+      - attributes/**
+      - modules/**
+      - environments/**
+      - scripts/**
+      - azure-pipelines/**
+    exclude:
+      - '*.md'
+      - docs/**
+
+# Tag trigger for promotions
+pr:
+  branches:
+    include:
+      - master
+  paths:
+    include:
+      - attributes/**
+      - modules/**
+      - environments/**
+
+# ========================================
+# Variables
+# ========================================
+
+variables:
+  - name: TF_VERSION
+    value: '1.13.3'
+  - name: PYTHON_VERSION
+    value: '3.10'
+  - name: TF_IN_AUTOMATION
+    value: 'true'
+  - name: TF_INPUT
+    value: 'false'
+  - name: CHECKOV_VERSION
+    value: '3.0.0'
+  
+  # Determine deployment environment from tag
+  - name: isDevTag
+    value: $[startsWith(variables['Build.SourceBranch'], 'refs/tags/dev/')]
+  - name: isQaTag
+    value: $[startsWith(variables['Build.SourceBranch'], 'refs/tags/qa/')]
+  - name: isValTag
+    value: $[startsWith(variables['Build.SourceBranch'], 'refs/tags/val/')]
+  - name: isProdTag
+    value: $[startsWith(variables['Build.SourceBranch'], 'refs/tags/prod/')]
+  - name: isHotfix
+    value: $[contains(variables['Build.SourceBranch'], 'hotfix')]
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+# ========================================
+# Stages
+# ========================================
+
+stages:
+  # ========================================
+  # Stage 1: Validation & Security
+  # ========================================
+  - stage: Validation
+    displayName: 'Validation & Security'
+    jobs:
+      # YAML Validation
+      - job: ValidateYAML
+        displayName: 'Validate Attribute YAML'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+              addToPath: true
+
+          - script: |
+              pip install pyyaml
+              python scripts/validate-attributes.py --dir . --strict
+            displayName: 'Validate Attribute Definitions'
+            
+          - script: |
+              echo "Checking for duplicate attributes..."
+              python -c "
+              import yaml
+              import sys
+              from pathlib import Path
+              
+              base = yaml.safe_load(open('attributes/definitions/custom_attributes.yaml'))
+              attrs = {a['name'] for a in base.get('attributes', [])}
+              
+              for env in ['dev', 'qa', 'val', 'prod']:
+                  override_file = f'attributes/overrides/{env}.yaml'
+                  if Path(override_file).exists():
+                      data = yaml.safe_load(open(override_file))
+                      additions = {a['name'] for a in data.get('additions', [])}
+                      conflicts = attrs.intersection(additions)
+                      if conflicts:
+                          print(f'ERROR: Duplicate attributes in {env}: {conflicts}')
+                          sys.exit(1)
+              print('✓ No duplicate attributes found')
+              "
+            displayName: 'Check for Duplicate Attributes'
+
+      # Terraform Format & Validation
+      - job: TerraformValidation
+        displayName: 'Terraform Validation'
+        steps:
+          - task: TerraformInstaller@1
+            displayName: 'Install Terraform'
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - script: |
+              echo "Checking Terraform formatting..."
+              terraform fmt -check -recursive -diff
+              if [ $? -ne 0 ]; then
+                echo "❌ Terraform files are not properly formatted"
+                echo "Run 'terraform fmt -recursive' to fix"
+                exit 1
+              fi
+              echo "✓ Terraform formatting check passed"
+            displayName: 'Check Terraform Format'
+            workingDirectory: $(System.DefaultWorkingDirectory)
+
+          - script: |
+              echo "Validating Terraform configurations..."
+              for region in apac emea; do
+                for env in dev qa val prod; do
+                  echo "Validating $region/$env..."
+                  cd environments/$region/$env
+                  terraform init -backend=false
+                  terraform validate
+                  cd ../../..
+                done
+              done
+              echo "✓ All Terraform configurations valid"
+            displayName: 'Validate Terraform Syntax'
+            workingDirectory: $(System.DefaultWorkingDirectory)
+
+      # Security Scanning
+      - job: SecurityScan
+        displayName: 'Security Scanning'
+        steps:
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python for Checkov'
+            inputs:
+              versionSpec: $(PYTHON_VERSION)
+
+          - script: |
+              pip install checkov==$(CHECKOV_VERSION)
+              echo "Installed Checkov version:"
+              checkov --version
+            displayName: 'Install Checkov'
+
+          - script: |
+              echo "========================================" 
+              echo "Running Checkov Security Scan"
+              echo "========================================"
+              
+              # Scan modules
+              echo "Scanning modules..."
+              checkov -d modules/ \
+                --framework terraform \
+                --output cli \
+                --output junitxml \
+                --output-file-path $(Build.ArtifactStagingDirectory) \
+                --soft-fail || true
+              
+              # Scan environments
+              echo "Scanning environments..."
+              checkov -d environments/ \
+                --framework terraform \
+                --output cli \
+                --soft-fail || true
+                
+              echo "✓ Security scan complete"
+            displayName: 'Checkov Security Scan'
+
+          - task: PublishTestResults@2
+            displayName: 'Publish Security Results'
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: '$(Build.ArtifactStagingDirectory)/results_junitxml.xml'
+              testRunTitle: 'Checkov Security Scan'
+              failTaskOnFailedTests: false
+            condition: always()
+
+      # Compliance Check
+      - job: ComplianceCheck
+        displayName: 'Compliance Validation'
+        steps:
+          - script: |
+              echo "Checking compliance requirements..."
+              
+              # Check for required metadata
+              python -c "
+              import yaml
+              import sys
+              
+              data = yaml.safe_load(open('attributes/definitions/custom_attributes.yaml'))
+              metadata = data.get('metadata', {})
+              
+              required_fields = ['owner', 'description', 'contact']
+              missing = [f for f in required_fields if f not in metadata]
+              
+              if missing:
+                  print(f'ERROR: Missing metadata fields: {missing}')
+                  sys.exit(1)
+              
+              print('✓ Metadata compliance check passed')
+              "
+              
+              # Check for sensitive attribute handling
+              python -c "
+              import yaml
+              import re
+              
+              data = yaml.safe_load(open('attributes/definitions/custom_attributes.yaml'))
+              
+              sensitive_patterns = ['password', 'secret', 'token', 'ssn', 'tax']
+              
+              for attr in data.get('attributes', []):
+                  name = attr.get('name', '').lower()
+                  if any(p in name for p in sensitive_patterns):
+                      if attr.get('permissions') not in ['HIDE', 'READ_ONLY']:
+                          print(f'WARNING: Sensitive attribute {attr[\"name\"]} should be HIDE or READ_ONLY')
+              
+              print('✓ Sensitive data compliance check complete')
+              "
+            displayName: 'Compliance Checks'
+
+  # ========================================
+  # Stage 2: Plan Generation (Main branch only)
+  # ========================================
+  - stage: PlanDev
+    displayName: 'Plan DEV Environment'
+    dependsOn: Validation
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/master'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
+    variables:
+      - group: okta-terraform-dev
+    jobs:
+      - template: templates/terraform-plan.yml
+        parameters:
+          environment: 'dev'
+          regions: ['apac', 'emea']
+          variableGroup: 'okta-terraform-dev'
+
+  # ========================================
+  # Stage 3: DEV Deployment (Automatic on master)
+  # ========================================
+  - stage: DeployDev
+    displayName: 'Deploy to DEV'
+    dependsOn: PlanDev
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['Build.SourceBranch'], 'refs/heads/master'),
+        ne(variables['Build.Reason'], 'PullRequest')
+      )
+    variables:
+      - group: okta-terraform-dev
+    jobs:
+      - deployment: DeployDevAPAC
+        displayName: 'Deploy DEV APAC'
+        environment: 'okta-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'dev'
+                    region: 'apac'
+                    variableGroup: 'okta-terraform-dev'
+
+      - deployment: DeployDevEMEA
+        displayName: 'Deploy DEV EMEA'
+        environment: 'okta-dev'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'dev'
+                    region: 'emea'
+                    variableGroup: 'okta-terraform-dev'
+
+  # ========================================
+  # Stage 4: QA Deployment (Tag triggered)
+  # ========================================
+  - stage: DeployQA
+    displayName: 'Deploy to QA'
+    dependsOn: Validation
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['isQaTag'], 'true')
+      )
+    variables:
+      - group: okta-terraform-qa
+    jobs:
+      - template: templates/terraform-plan.yml
+        parameters:
+          environment: 'qa'
+          regions: ['apac', 'emea']
+          variableGroup: 'okta-terraform-qa'
+
+      - deployment: ApproveQA
+        displayName: 'Approve QA Deployment'
+        dependsOn: 
+          - TerraformPlan_qa_apac
+          - TerraformPlan_qa_emea
+        environment: 'okta-qa-approval'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: echo "QA deployment approved"
+
+      - deployment: DeployQAAPAC
+        displayName: 'Deploy QA APAC'
+        dependsOn: ApproveQA
+        environment: 'okta-qa'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'qa'
+                    region: 'apac'
+                    variableGroup: 'okta-terraform-qa'
+
+      - deployment: DeployQAEMEA
+        displayName: 'Deploy QA EMEA'
+        dependsOn: ApproveQA
+        environment: 'okta-qa'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'qa'
+                    region: 'emea'
+                    variableGroup: 'okta-terraform-qa'
+
+  # ========================================
+  # Stage 5: VAL Deployment (Tag triggered)
+  # ========================================
+  - stage: DeployVal
+    displayName: 'Deploy to Validation'
+    dependsOn: Validation
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['isValTag'], 'true')
+      )
+    variables:
+      - group: okta-terraform-val
+    jobs:
+      - template: templates/terraform-plan.yml
+        parameters:
+          environment: 'val'
+          regions: ['apac', 'emea']
+          variableGroup: 'okta-terraform-val'
+
+      - deployment: ApproveVal
+        displayName: 'Approve VAL Deployment'
+        dependsOn: 
+          - TerraformPlan_val_apac
+          - TerraformPlan_val_emea
+        environment: 'okta-val-approval'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: echo "Validation deployment approved"
+
+      - deployment: DeployValParallel
+        displayName: 'Deploy VAL (All Regions)'
+        dependsOn: ApproveVal
+        environment: 'okta-val'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'val'
+                    region: 'apac'
+                    variableGroup: 'okta-terraform-val'
+                    
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'val'
+                    region: 'emea'
+                    variableGroup: 'okta-terraform-val'
+
+  # ========================================
+  # Stage 6: PROD Deployment (Tag triggered with CAB)
+  # ========================================
+  - stage: DeployProd
+    displayName: 'Deploy to Production'
+    dependsOn: Validation
+    condition: |
+      and(
+        succeeded(),
+        eq(variables['isProdTag'], 'true')
+      )
+    variables:
+      - group: okta-terraform-prod
+    jobs:
+      # Generate plans for review
+      - template: templates/terraform-plan.yml
+        parameters:
+          environment: 'prod'
+          regions: ['apac', 'emea']
+          variableGroup: 'okta-terraform-prod'
+          saveplan: true
+
+      # CAB Approval
+      - deployment: CABApproval
+        displayName: 'CAB Approval Required'
+        dependsOn: 
+          - TerraformPlan_prod_apac
+          - TerraformPlan_prod_emea
+        environment: 'okta-prod-cab'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - script: |
+                    echo "========================================" 
+                    echo "PRODUCTION DEPLOYMENT REQUIRES CAB APPROVAL"
+                    echo "========================================" 
+                    echo "Tag: $(Build.SourceBranch)"
+                    echo "Requestor: $(Build.RequestedFor)"
+                    echo "Build: $(Build.BuildNumber)"
+                    echo ""
+                    echo "Please ensure:"
+                    echo "✓ CAB ticket approved"
+                    echo "✓ Maintenance window scheduled" 
+                    echo "✓ Rollback plan documented"
+                    echo "✓ On-call team notified"
+                    echo "========================================" 
+                  displayName: 'CAB Checklist'
+
+      # Deploy to Production
+      - deployment: DeployProdAPAC
+        displayName: 'Deploy PROD APAC'
+        dependsOn: CABApproval
+        environment: 'okta-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'prod'
+                    region: 'apac'
+                    variableGroup: 'okta-terraform-prod'
+                    runSmokeTests: true
+
+      - deployment: DeployProdEMEA
+        displayName: 'Deploy PROD EMEA'
+        dependsOn: DeployProdAPAC  # Sequential for safety
+        environment: 'okta-prod'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - template: templates/terraform-apply.yml
+                  parameters:
+                    environment: 'prod'
+                    region: 'emea'
+                    variableGroup: 'okta-terraform-prod'
+                    runSmokeTests: true
+
+  # ========================================
+  # Stage 7: Post-Deployment
+  # ========================================
+  - stage: PostDeployment
+    displayName: 'Post-Deployment Tasks'
+    dependsOn: 
+      - DeployDev
+      - DeployQA
+      - DeployVal
+      - DeployProd
+    condition: |
+      or(
+        eq(dependencies.DeployDev.result, 'Succeeded'),
+        eq(dependencies.DeployQA.result, 'Succeeded'),
+        eq(dependencies.DeployVal.result, 'Succeeded'),
+        eq(dependencies.DeployProd.result, 'Succeeded')
+      )
+    jobs:
+      - job: Notification
+        displayName: 'Send Notifications'
+        steps:
+          - script: |
+              echo "Deployment Complete"
+              echo "Environment deployed: Check previous stages"
+              echo "Build: $(Build.BuildNumber)"
+              echo "Commit: $(Build.SourceVersion)"
+            displayName: 'Deployment Summary'

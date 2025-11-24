@@ -1,0 +1,58 @@
+# ========================================
+# DEV Environment Overrides
+# ========================================
+# This file contains environment-specific overrides and additions
+# for the DEV environment. These settings will override or extend
+# the base attributes defined in custom_attributes.yaml
+
+version: "1.0"
+
+metadata:
+  description: "Development environment attribute overrides"
+  environment: "dev"
+  owner: "Platform Engineering"
+  notes: "Relaxed validation for development testing"
+
+# ========================================
+# Overrides Section
+# ========================================
+# These override specific properties of base attributes
+# Only include the properties you want to change
+
+overrides:
+  # Make employee_id optional and allow any format in DEV
+  - name: "employee_id"
+    required: false
+    permissions: "READ_WRITE"
+    pattern: null  # Remove pattern validation in DEV
+    min_length: null
+    max_length: 50  # Allow longer values for testing
+    unique: "NOT_UNIQUE"  # Don't enforce uniqueness in DEV
+    
+  # Simplify office locations for DEV
+  - name: "office_location"
+    enum:  # Replace one_of with simple enum for DEV
+      - "US"
+      - "UK"
+      - "APAC"
+      - "REMOTE"
+      - "TEST"  # Additional test value
+
+# ========================================
+# Additions Section
+# ========================================
+# These are new attributes only for DEV environment
+# Useful for testing new attributes before promoting to other environments
+
+additions:
+  # Test attribute for debugging
+  - name: "debug_mode"
+    type: "boolean"
+    display_name: "Debug Mode"
+    description: "Enable debug mode for this user"
+    master: "OKTA"
+    permissions: "READ_WRITE"
+    required: false
+
+# If no additions:
+# additions: []

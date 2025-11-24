@@ -399,8 +399,9 @@ stages:
               steps:
                 - script: echo "Validation deployment approved"
 
-      - deployment: DeployValParallel
-        displayName: 'Deploy VAL (All Regions)'
+      # Deploy to VAL APAC
+      - deployment: DeployValAPAC
+        displayName: 'Deploy VAL APAC'
         dependsOn: ApproveVal
         environment: 'okta-val'
         strategy:
@@ -412,7 +413,16 @@ stages:
                     environment: 'val'
                     region: 'apac'
                     variableGroup: 'okta-terraform-val'
-                    
+
+      # Then deploy to VAL EMEA
+      - deployment: DeployValEMEA
+        displayName: 'Deploy VAL EMEA'
+        dependsOn: ApproveVal
+        environment: 'okta-val'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
                 - template: templates/terraform-apply.yml
                   parameters:
                     environment: 'val'
